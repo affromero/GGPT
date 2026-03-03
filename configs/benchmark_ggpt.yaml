@@ -8,7 +8,7 @@ hydra:
   run: 
     dir: outputs/benchmark/ggpt_vggt-point-romav2-base
 
-model_config:
+ggptmodel_config:
   _target_: ggpt.model.base.BasePredictor
   grid_resolution: 384 
   type_embed_dim: 16
