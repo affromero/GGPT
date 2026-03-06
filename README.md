@@ -12,21 +12,21 @@ Official PyTorch implementation of **Geometry-grounded Point Transformer (GGPT)*
 ---
 
 
-## 🛠️ Installation
+## 🛠️ 1. Installation
 
-### 1. Clone the repository
+### 1.1 Clone the repository
 ```bash
 git clone --recursive https://github.com/chenyutongthu/GGPT.git
 cd GGPT
 ```
 
 
-### 2. Install dependencies
+### 1.2 Install dependencies
 
-#### 2.0 Create a virtual environment.
-#### 2.1 Install torch, torchvision for your CUDA version. (The environment does not require specific CUDA or pytorch version. It has been tested in CUDA 12.1/12.3 and torch 2.2.0/2.5.1.)
+#### a. Create a virtual environment.
+#### b. Install torch, torchvision for your CUDA version. (The environment does not require specific CUDA or pytorch version. It has been tested in CUDA 12.1/12.3 and torch 2.2.0/2.5.1.)
 
-#### 2.2 Install requirements for VGGT and SfM.
+#### c. Install requirements for VGGT and SfM.
 ```
 pip install -r requirements_sfm.txt
 # Choose which matcher to use.
@@ -37,14 +37,13 @@ pip install fused-local-corr>=0.2.2
 cd RoMa/ && pip install -e .
 ```
 
-#### 2.3 \[Optional\] If you need to run GGPT, the 3D point transformer, please follow [the script](ptv3_env.sh) install the following packages in the same virtual environement. You don't need to build another env for this.
+#### d. \[Optional\] If you need to run GGPT, the 3D point transformer, please follow [the script](ptv3_env.sh) install the following packages in the same virtual environement. You don't need to build another env for this.
 
-#### 2.4 Download our pretrained GGPT checkpoint directly [here](https://huggingface.co/YutongGoose/GGPT).
+#### e. Download our pretrained GGPT checkpoint directly [here](https://huggingface.co/YutongGoose/GGPT).
 
 ---
 
-## 📖 Usage & Examples
-
+## 2. 📖 Usage & Examples
 
 
 ```bash
@@ -76,28 +75,77 @@ dlt_config:
   max_reproj_error: 4     # Reduce the reprojection error threshold to filter out noisy points
 ```
 
+
+### 🎬 Large number of input views
+
 ---
 
-## 📊 Evaluation
+## 3. 📊 Evaluation
 
-To run evaluations on the benchmark:
 
-**1. Download the Dataset:**
-Download the [preprocessed evaluation set](https://huggingface.co/datasets/YutongGoose/GGPT_eval) and place it at the root of this project as `GGPT_eval/`.
+### 3.1 Evaluation on our benchmark
 
-**2. Run Evaluation:**
+Download the [preprocessed evaluation set](https://huggingface.co/datasets/YutongGoose/GGPT_eval) and place it at the root of this project as `GGPT_eval`. Run `sh benchmark_eval.sh`
+
+### 3.2 Evaluation on your custom data
+
+You can evaluate GGPT on your own datasets by organizing your data into a `custom_eval_set` or by modifying the dataloader.
+
+**a. Organize your data directory**
+
+Prepare your dataset following this directory structure:
+
+```text
+custom_eval_set/
+└── seq0/
+    ├── depths/                  # Ground truth depth maps
+    │   ├── 000000.npy           # (H, W) float32 array
+    │   └── ...
+    ├── images/                  # Input images
+    │   ├── 000000.jpg           # (H, W, 3) RGB image
+    │   └── ... 
+    ├── extrinsics.npy           # (N, 4, 4) world-to-camera matrices (OpenCV convention)
+    └── intrinsics.npy           # (N, 3, 3) linear camera intrinsics (top-left pixel center is (0,0))
+```
+
+**b. Update dataset configurations**
+
+Add your custom dataset configuration to the evaluation YAML file (e.g., `configs/benchmark_sfm.yaml`):
+
+```yaml
+valdataset_configs:
+  - _target_: sfm.dataloader.extracted.ExtractedDataset
+    name: custom_eval_set
+    root: PATH/TO/custom_eval_set
+```
+
+**c. Run the evaluation**
+
+First, run the Structure-from-Motion (SfM) pipeline to extract the sparse point clouds:
+
 ```bash
-sh benchmark_eval.sh
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 --rdzv-endpoint=localhost:2026 \
+    sfm/run_benchmark_sfm.py \
+    match_config.models='romav2-base' \
+    feedforward_config.model='vggt-point' \
+    hydra.run.dir=outputs/custom_eval/sfm_vggt-point_romav2
+```
+
+Then, run the GGPT pipeline using the output from the SfM step:
+
+```bash
+python -m torch.distributed.run --nnodes=1 --nproc_per_node=1 \
+    --rdzv-endpoint=localhost:2026 \
+    ggpt/run_benchmark_ggpt.py \
+    valdataset_configs.data_dict.custom_eval_set=outputs/custom_eval/sfm_vggt-point_romav2/save/custom_eval_set \
+    hydra.run.dir=outputs/custom_eval/ggpt_vggt-point_romav2
 ```
 
 
-## 🧗‍♀️ TODO
 
-* [ ] Release scripts for large-scale multi-view processing.
 
-* [ ] Release GGPT training code.
 
-* [ ] Launch interactive online demo.
+
 
 ## 📖 Citing
 
