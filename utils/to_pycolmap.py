@@ -1,6 +1,7 @@
 # import pycolmap 
 import numpy as np
 
+
 def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
     """
     Helper function to get camera parameters based on camera type.
@@ -30,19 +31,20 @@ def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
 
     return pycolmap_intri
 
+
 def batch_torch_matrix_to_pycolmap(
-    points3d,
-    extrinsics,
-    intrinsics,
-    tracks,
-    image_size,
-    masks,
-    max_points3D_val=3000,
-    shared_camera=False,
-    camera_type="SIMPLE_PINHOLE",
-    extra_params=None,
-    min_inlier_per_frame=64,
-    points_rgb=None,
+        points3d,
+        extrinsics,
+        intrinsics,
+        tracks,
+        image_size,
+        masks,
+        max_points3D_val=3000,
+        shared_camera=False,
+        camera_type="SIMPLE_PINHOLE",
+        extra_params=None,
+        min_inlier_per_frame=64,
+        points_rgb=None,
 ):
     import pycolmap
     """
@@ -69,11 +71,11 @@ def batch_torch_matrix_to_pycolmap(
     assert len(intrinsics) == N
     # Reconstruction object, following the format of PyCOLMAP/COLMAP
     reconstruction = pycolmap.Reconstruction()
-    points2d_negconfs = [] #[(N_pts,)] # For query points in that frame, the conf is 
+    points2d_negconfs = []  # [(N_pts,)] # For query points in that frame, the conf is
 
     if points3d is not None:
         assert len(points3d) == P
-        inlier_num = masks.sum(0) #N_track
+        inlier_num = masks.sum(0)  # N_track
         valid_mask = inlier_num >= 2  # a track is invalid if without two inliers
         valid_idx = np.nonzero(valid_mask)[0]
         # Only add 3D points that have sufficient 2D points
@@ -83,7 +85,7 @@ def batch_torch_matrix_to_pycolmap(
             reconstruction.add_point3D(points3d[vidx], pycolmap.Track(), rgb)
         num_points3D = len(valid_idx)
     else:
-        valid_mask = None #We do not filter any tracks at this stage, only output reconstruction
+        valid_mask = None  # We do not filter any tracks at this stage, only output reconstruction
     camera = None
 
     # frame idx
@@ -96,27 +98,13 @@ def batch_torch_matrix_to_pycolmap(
 
             # add camera
             reconstruction.add_camera(camera)
-            if True or pycolmap.__version__ == '3.13.0': #To check the version
-                rig = pycolmap.Rig(rig_id=fidx+1)
-                rig.add_ref_sensor(camera.sensor_id)
-                reconstruction.add_rig(rig)
-
 
         # set image
         cam_from_world = pycolmap.Rigid3d(
             pycolmap.Rotation3d(extrinsics[fidx][:3, :3]), extrinsics[fidx][:3, 3]
         )  # Rot and Trans
-        if True or pycolmap.__version__ == '3.13.0':
-            image = pycolmap.Image(frame_id=fidx+1, image_id=fidx+1, camera_id=camera.camera_id, name=f"image_{fidx + 1}.png")
-            frame = pycolmap.Frame(frame_id=fidx+1, rig_id=rig.rig_id, rig_from_world=cam_from_world)
-            frame.add_data_id(image.data_id)
-            
-        else:
-            image = pycolmap.Image(
-                image_id=fidx + 1, name=f"image_{fidx + 1}.png", camera_id=camera.camera_id, cam_from_world=cam_from_world)
-
-
-
+        image = pycolmap.Image(
+            image_id=fidx + 1, name=f"image_{fidx + 1}.png", camera_id=camera.camera_id, cam_from_world=cam_from_world)
 
         if points3d is not None:
             points2D_list = []
@@ -140,11 +128,11 @@ def batch_torch_matrix_to_pycolmap(
             assert point2D_idx == len(points2D_list)
             if point2D_idx == 0:
                 print(f"frame {fidx + 1} does not have any points.")
-                #return None, valid_mask, points2d_negconfs
+                # return None, valid_mask, points2d_negconfs
 
-            #image.points2D = pycolmap.ListPoint2D(points2D_list) (colmap 3.9)
+            # image.points2D = pycolmap.ListPoint2D(points2D_list) (colmap 3.9)
             image.points2D = pycolmap.Point2DList(points2D_list)  # colmap 3.12
-        #image.registered = True #colmap 3.9 Comment this for colmap 3.12
+        # image.registered = True #colmap 3.9 Comment this for colmap 3.12
         '''
         try:
             print(f"frame {fidx + 1} ", len(points2D_list))
@@ -154,12 +142,8 @@ def batch_torch_matrix_to_pycolmap(
             print(f"frame {fidx + 1} is out of BA")
             #image.registered = False
         '''
-        
+
         # add image
-        if True or pycolmap.__version__ == '3.13.0': #To check the version
-            reconstruction.add_frame(frame)
-            reconstruction.add_image(image)
-        else:
-            reconstruction.add_image(image)
+        reconstruction.add_image(image)
 
     return reconstruction

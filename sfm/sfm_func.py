@@ -21,16 +21,22 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     """
     1. Dense matching
     """
-    if isinstance(images, torch.Tensor)==False:
-        # first convert to torch tensor 
-        images = torch.from_numpy(np.stack([np.array(img) for img in images], axis=0)).float()/255.0  #(N,H,W,3)
-        images = images.to(device)
-    m_h, m_w = images.shape[1:3]
+    match_on_ff_res = os.environ.get("GGPT_MATCH_ON_FF_RES", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
+    if match_on_ff_res:
+        images_for_matching = images_ff
+        Print("GGPT_MATCH_ON_FF_RES=1: running matcher on feedforward-resolution images.")
+    else:
+        if isinstance(images, torch.Tensor)==False:
+            # first convert to torch tensor
+            images = torch.from_numpy(np.stack([np.array(img) for img in images], axis=0)).float()/255.0  #(N,H,W,3)
+            images = images.to(device)
+        images_for_matching = images
+    m_h, m_w = images_for_matching.shape[1:3]
     sx, sy = ff_w/m_w, ff_h/m_h
     mres_to_fres = torch.tensor([[sx,0,0.5*(sx-1)],[0,sy,0.5*(sy-1)],[0,0,1]], dtype=torch.float32).to(device)  #3,3
     match_results = match_images(
         match_models=match_models,
-        images_hr=images.permute(0,3,1,2),  #N,3,H,W
+        images_hr=images_for_matching.permute(0,3,1,2),  #N,3,H,W
         lr_h=ff_h, lr_w=ff_w,
         hr_to_lr=mres_to_fres
     )
@@ -103,22 +109,45 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     bundle_adjuster = pycolmap.create_default_bundle_adjuster(ba_options, ba_config, reconstruction)
     bundle_adjuster.solve()
 
+    sfm_points_world = []
+    sfm_points_score = []
+    for pid in sorted(reconstruction.points3D.keys()):
+        p3d = reconstruction.points3D[pid]
+        xyz = np.asarray(p3d.xyz, dtype=np.float32)
+        if np.isfinite(xyz).all() is False:
+            continue
+        sfm_points_world.append(xyz)
+        err = float(getattr(p3d, "error", np.nan))
+        if np.isfinite(err) and err > 1e-9:
+            sfm_points_score.append(float(1.0 / err))
+        else:
+            sfm_points_score.append(0.0)
+    if len(sfm_points_world) > 0:
+        output_dict["sfm_points_world"] = torch.from_numpy(np.asarray(sfm_points_world, dtype=np.float32)).to(device)
+        output_dict["sfm_points_score"] = torch.from_numpy(np.asarray(sfm_points_score, dtype=np.float32)).to(device)
+    else:
+        output_dict["sfm_points_world"] = torch.zeros((0, 3), dtype=torch.float32, device=device)
+        output_dict["sfm_points_score"] = torch.zeros((0,), dtype=torch.float32, device=device)
 
 
     output_dict['intrinsics'] = torch.zeros_like(ff_outputs['intrinsics'])
     output_dict['extrinsics'] = torch.zeros_like(ff_outputs['extrinsics'])
     for i in range(1,N+1): # Image ids in pycolmap start from 1
-        fx, fy, cx, cy = reconstruction.cameras[reconstruction.images[i].camera_id].params[:4]
+        cam_params = reconstruction.cameras[reconstruction.images[i].camera_id].params
+        if len(cam_params) == 3:
+            fx = float(cam_params[0])
+            fy = fx
+        elif len(cam_params) >= 4:
+            fx = float(cam_params[0])
+            fy = float(cam_params[1])
+        else:
+            raise AssertionError(f"Unsupported camera params length: {len(cam_params)}")
         output_dict['intrinsics'][i-1, 0, 0] = fx
         output_dict['intrinsics'][i-1, 1, 1] = fy
         output_dict['intrinsics'][i-1, 0, 2] = ff_w/2-0.5
         output_dict['intrinsics'][i-1, 1, 2] = ff_h/2-0.5 #Center principal point!
         output_dict['intrinsics'][i-1, 2, 2] = 1.0
-        if True or pycolmap.__version__ == '3.13.0':
-            rigid3d = reconstruction.images[i].cam_from_world().matrix() # (3,4)
-            #or rigid3d=reconstruction.frames[i].rig_from_world.matrix()
-        else:
-            rigid3d = reconstruction.images[i].cam_from_world.matrix() # (3,4)
+        rigid3d = reconstruction.images[i].cam_from_world.matrix() # (3,4)
         output_dict['extrinsics'][i-1,:3,:] = torch.from_numpy(rigid3d).to(device).float()
         if output_dict['extrinsics'].shape[1] == 4:
             output_dict['extrinsics'][i-1,3,3] = 1.0
@@ -236,6 +265,3 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
 
     return output_dict
     
-
-
-

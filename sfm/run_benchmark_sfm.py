@@ -89,6 +89,7 @@ def init_DDP(cfg=None):
 
 @hydra.main(version_base=None, config_path="../configs",config_name="benchmark_sfm")
 def main(cfg):
+    torch.set_float32_matmul_precision("highest")
     set_seed(cfg.common_config.seed)
     if cfg.common_config.ddp:
         rank, local_rank, device = init_DDP()

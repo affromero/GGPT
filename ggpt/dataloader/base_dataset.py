@@ -8,6 +8,15 @@ from tqdm import tqdm
 from utils.points import umeyama_alignment
 from ggpt.dataloader import points_utils
 
+
+def _env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(self, 
             chunk_sample='random', # or octree or tile
@@ -26,6 +35,12 @@ class BaseDataset(torch.utils.data.Dataset):
         self.max_num_chunks_after_converge = max_num_chunks_after_converge
         self.pca_transform = pca_transform
         self.overlap_ratio = overlap_ratio
+        self.disable_gt_input_filters = _env_flag("GGPT_DISABLE_GT_INPUT_FILTERS", False)
+        if self.disable_gt_input_filters:
+            print(
+                "[GGPT] GGPT_DISABLE_GT_INPUT_FILTERS=1: "
+                "disabling GT-based input filtering (tandt ROI and 4ddress mask)."
+            )
     
     def load_scene_(self, idx):
         scene = self.load_scene(idx)
@@ -43,14 +58,15 @@ class BaseDataset(torch.utils.data.Dataset):
             scene['gt_pts_metric'] = scene['gt_pts'].clone()
             scene['gt_pts'] = umeyama_alignment(B=scene['geo_pts'], A=scene['gt_pts'], mask=scene['gt_msks']& scene['geo_msks'])[0]
             scene['gt_pts'][~scene['gt_msks']] = 0
-        
-            if 'tandt' in scene['dataset_name']: #HARD-CODED. Here Otherwise, scene scale for TnT outdoor scenes are too large.
-                roi_min, roi_max = self.get_bbox(scene)
-                scene['geo_msks'] &= ( (scene['geo_pts']>=roi_min) & (scene['geo_pts']<=roi_max) ).all(dim=-1)
-                scene['ff_msks'] = ( (scene['ff_pts']>=roi_min) & (scene['ff_pts']<=roi_max) ).all(dim=-1)
-            if '4ddress' in scene['dataset_name']: #Use human segmentation to filter out non-human points. TODO: Replace the mask with SAM
-                scene['geo_msks'] &= scene['gt_msks']
-                scene['ff_msks'] = scene['gt_msks']
+
+            if self.disable_gt_input_filters is False:
+                if 'tandt' in scene['dataset_name']: #HARD-CODED. Here Otherwise, scene scale for TnT outdoor scenes are too large.
+                    roi_min, roi_max = self.get_bbox(scene)
+                    scene['geo_msks'] &= ( (scene['geo_pts']>=roi_min) & (scene['geo_pts']<=roi_max) ).all(dim=-1)
+                    scene['ff_msks'] = ( (scene['ff_pts']>=roi_min) & (scene['ff_pts']<=roi_max) ).all(dim=-1)
+                if '4ddress' in scene['dataset_name']: #Use human segmentation to filter out non-human points. TODO: Replace the mask with SAM
+                    scene['geo_msks'] &= scene['gt_msks']
+                    scene['ff_msks'] = scene['gt_msks']
         #scene['radius'] = torch.std(scene['geo_pts'][scene['geo_msks']], dim=0).mean().item()*3 #a scalar
         #geo_pts might have outlier we use ff_pts to compute the radius
         if 'ff_msks' in scene:
@@ -231,6 +247,5 @@ class BaseDataset(torch.utils.data.Dataset):
             return scene_chunks, scene
         
     
-
 
 

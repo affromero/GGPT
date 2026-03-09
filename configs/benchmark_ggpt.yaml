@@ -6,7 +6,7 @@ common_config:
   load_ckpt: ckpts/model.step228000.pth
 hydra:
   run: 
-    dir: outputs/benchmark/ggpt_vggt-point-romav2-base
+    dir: outputs/benchmark_lowres/ggpt_vggt-point-romav2-base
 
 ggptmodel_config:
   _target_: ggpt.model.base.BasePredictor
@@ -34,4 +34,14 @@ valdataset_configs:
   pca_transform: False
   chunk_sample: 'random'
   data_dict:
-    4ddress_vggt-point-romav2-base: outputs/benchmark/sfm_vggt-point-romav2-base/save/4ddress/*
+    eth3d_4views: outputs/benchmark_lowres/sfm_vggt-point-romav2-base/save/eth3d_4views/*
+    # eth3d_8views: outputs/benchmark/sfm_vggt-point-romav2-base/save/eth3d_8views/*
+    # eth3d_16views: outputs/benchmark/sfm_vggt-point-romav2-base/save/eth3d_16views/*
+    scannetpp_4views: outputs/benchmark_lowres/sfm_vggt-point-romav2-base/save/scannetpp_4views/*
+    # scannetpp_8views: outputs/benchmark/sfm_vggt-point-romav2-base/save/scannetpp_8views/*
+    # scannetpp_16views: outputs/benchmark/sfm_vggt-point-romav2-base/save/scannetpp_16views/*
+    tandt_4views: outputs/benchmark_lowres/sfm_vggt-point-romav2-base/save/tandt_4views/*
+    # tandt_8views: outputs/benchmark/sfm_vggt-point-romav2-base/save/tandt_8views/*
+    # tandt_16views: outputs/benchmark/sfm_vggt-point-romav2-base/save/tandt_16views/*
+    # mvdvrk: outputs/benchmark/sfm_vggt-point-romav2-base/save/mvdvrk/*
+    4ddress: outputs/benchmark_lowres/sfm_vggt-point-romav2-base/save/4ddress/*

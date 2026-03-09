@@ -36,8 +36,7 @@ def main(cfg):
         rank, device_id = init_DDP()
         device = 'cuda'
     else:
-        raise NotImplementedError("DDP is not supported for GGPT yet!")
-        device = 'cuda'
+        raise NotImplementedError("Only DDP is supported in GGPT currently!")
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     logger = EvalLogger(output_dir)
     model = instantiate(cfg.ggptmodel_config).eval()
