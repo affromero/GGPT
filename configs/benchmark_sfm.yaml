@@ -69,6 +69,7 @@ ba_config:
   calibrated: False  
   loss_function_type: 'cauchy'
   loss_function_scale: 0.1
+  camera_type: PINHOLE
 
 dlt_config:
   score_thresh: 0.1
