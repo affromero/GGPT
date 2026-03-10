@@ -4,6 +4,15 @@ from utils.geometry import unproject_depth_map_to_point_map_torch, closed_form_i
 from PIL import Image
 import numpy as np
 import sys 
+import cv2
+
+
+def _resize_images_lanczos(images, output_height, output_width):
+    images_np = images.detach().cpu().numpy()
+    resized = []
+    for image in images_np:
+        resized.append(cv2.resize(image, (output_width, output_height), interpolation=cv2.INTER_LANCZOS4))
+    return torch.from_numpy(np.stack(resized, axis=0)).float()
 
 def preprocess(images, output_width=518):
     # Used to reproduce the submitted results
@@ -17,8 +26,7 @@ def preprocess(images, output_width=518):
         images = images.permute(0,2,1,3)  #(N,H,W,C)
         original_width, original_height = original_height, original_width
     output_height = round(output_width*original_height/original_width/14)*14
-    images_ff = torch.nn.functional.interpolate(images.permute(0,3,1,2), size=(output_height, output_width), mode='bilinear', align_corners=False)
-    images_ff = images_ff.permute(0,2,3,1)  #(N,H,W,C)
+    images_ff = _resize_images_lanczos(images, output_height, output_width)
     return images_ff
 
 

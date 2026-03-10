@@ -69,6 +69,13 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     Print(f"The number of tracks covering each view: {[nn.item() for nn in tracknum_perview]}")
     tracks_ba = match_results['pred_matches_lr'].view(N,-1,2)[:,selected]  #N, Ntracks_ba, 2
     tracks_mask_ba = M_ba[:,selected]  #Ntgt, Ntracks_ba
+    if tracks_mask_ba.shape[1] == 0:
+        raise AssertionError(
+            "No BA tracks selected after score/cycle filtering; "
+            f"views={N}, ff_hw=({ff_h},{ff_w}), "
+            f"tracks_visible_ge_2={(M_ba.sum(axis=0) >= 2).sum().item()}, "
+            f"mintrack_per_view={cfg.ba_config.mintrack_per_view}"
+        )
     assert tracks_mask_ba.sum(axis=0).min()>=2, "Each track should be visible in at least two views for BA."
     pts3d_ba = ff_outputs['points'].reshape(-1,3)[selected]  #Ntracks_ba, 3 (Takes the ff's prediction at query positions as initialization)
 
