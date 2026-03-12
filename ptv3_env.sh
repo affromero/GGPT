@@ -9,5 +9,6 @@ pip install flash-attn --no-build-isolation
 FLASH_ATTENTION_FORCE_BUILD=TRUE pip install --no-build-isolation --no-cache-dir flash-attn
 pip install gradio  # Required for the interactive demo app
 pip install einops  # Required for model components
+pip install gin-config
 
 # Note that the recipe of Ptv3 installation's highly depends on your pytorch and cuda version. You need to change the version of spconv and flash-attention accordingly, or install them from source when needed.
