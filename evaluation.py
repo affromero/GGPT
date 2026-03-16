@@ -174,13 +174,17 @@ def eval_points(gt_points, pred_points, eval_mask=None, align_mask=None,
     return output_dict, pred_points_aligned, sim3d_mat
 
 
-def eval_cameras(gt_extrinsics, pred_extrinsics, gt_intrinsics, pred_intrinsics):
+def eval_cameras(gt_extrinsics, pred_extrinsics, gt_intrinsics, pred_intrinsics, image_hw=None):
     c2w_pred = closed_form_inverse_se3(pred_extrinsics) #(N,4,4)
     c2w_gt = closed_form_inverse_se3(gt_extrinsics) #(N,4,4)
     ex_metrics = compute_extrinsic_error(c2w_pred=c2w_pred.cpu().numpy(), c2w_gt=c2w_gt.cpu().numpy())
-    Hs = (gt_intrinsics[0,1,2]+0.5)*2
-    Ws = (gt_intrinsics[0,0,2]+0.5)*2 #linear camera (same cameras), opencv convention
-    in_metrics = compute_intrinsic_error(intrinsics_pred=pred_intrinsics.cpu().numpy(), intrinsics_gt=gt_intrinsics.cpu().numpy(), Hs=Hs.item(), Ws=Ws.item())
+    if image_hw is None:
+        Hs = float((gt_intrinsics[0,1,2]+0.5)*2)
+        Ws = float((gt_intrinsics[0,0,2]+0.5)*2)
+    else:
+        Hs = float(image_hw[0])
+        Ws = float(image_hw[1])
+    in_metrics = compute_intrinsic_error(intrinsics_pred=pred_intrinsics.cpu().numpy(), intrinsics_gt=gt_intrinsics.cpu().numpy(), Hs=Hs, Ws=Ws)
     return {**ex_metrics, **in_metrics}
 
 

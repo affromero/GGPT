@@ -21,9 +21,7 @@ class ExtractedDataset(BaseDataset):
             w2c = extrinsics[i]
             c2w = closed_form_inverse_se3(w2c)
             imgname2pose[imgname] = {'c2w':c2w, 'w2c':w2c}
-            width = int((intrinsics[i,0,2]+0.5)*2)
-            height = int((intrinsics[i,1,2]+0.5)*2)
-            imgname2pose[imgname].update({'K': intrinsics[i], 'width': width, 'height': height, 'intr_convention':'opencv'})
+            imgname2pose[imgname].update({'K': intrinsics[i], 'intr_convention':'opencv'})
         return imgname2pose
     
     def read_img_pose(self, scene_name, img_name):

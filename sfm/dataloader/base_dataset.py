@@ -7,6 +7,7 @@ import torch.distributed as dist
 import math
 
 from .transform2D_utils import crop_image_depth_and_intrinsic_by_pp, resize_image_depth_and_intrinsic
+from utils.geometry import normalize_centered_intrinsics_to_opencv
 
 def string_to_filename(s: str) -> str:
     # Use SHA-256 and truncate for filename
@@ -121,6 +122,11 @@ class BaseDataset(torch.utils.data.Dataset):
             batch["extrinsics"].append(scene_pose[img_name]['w2c']) 
 
             height, width = image.shape[:2]
+            K = normalize_centered_intrinsics_to_opencv(
+                np.asarray(K, dtype=np.float32),
+                height,
+                width,
+            )
 
             if 'height' in scene_pose[img_name]:
                 assert height==scene_pose[img_name]['height'] and width==scene_pose[img_name]['width'], f"Image size mismatch {height} {width} {scene_pose[img_name]['height']} {scene_pose[img_name]['width']}"
@@ -158,5 +164,4 @@ class BaseDataset(torch.utils.data.Dataset):
         batch["extrinsics"] = torch.from_numpy(np.stack(batch["extrinsics"]).astype(np.float32))  #(N,4,4)
         batch["intrinsics"] = torch.from_numpy(np.stack(batch["intrinsics"]).astype(np.float32))  #(N,3,3)
         return batch
-
 

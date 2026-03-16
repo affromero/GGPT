@@ -1,11 +1,90 @@
 import torch
 import numpy as np
 
+def centered_principal_point(height, width, convention="opencv"):
+    if convention == "opencv":
+        return 0.5 * float(width - 1), 0.5 * float(height - 1)
+    if convention == "colmap":
+        return 0.5 * float(width), 0.5 * float(height)
+    raise ValueError(f"unsupported intrinsics convention: {convention!r}")
+
+
+def normalize_centered_intrinsics_to_opencv(K, height, width, tol_px=1e-3, snap_tol_px=None):
+    if snap_tol_px is None:
+        snap_tol_px = tol_px
+    exp_ox, exp_oy = centered_principal_point(height, width, convention="opencv")
+    exp_cx, exp_cy = centered_principal_point(height, width, convention="colmap")
+
+    if isinstance(K, np.ndarray):
+        out = np.array(K, copy=True)
+        abs_fn = np.abs
+        max_fn = np.maximum
+        where_fn = np.where
+    elif isinstance(K, torch.Tensor):
+        out = K.clone()
+        abs_fn = torch.abs
+        max_fn = torch.maximum
+        where_fn = torch.where
+    else:
+        raise TypeError(f"unsupported intrinsics type: {type(K)!r}")
+
+    if out.shape[-2:] != (3, 3):
+        raise ValueError(f"intrinsics must end with (3,3), got {out.shape}")
+
+    cx = out[..., 0, 2]
+    cy = out[..., 1, 2]
+    err_open = max_fn(abs_fn(cx - exp_ox), abs_fn(cy - exp_oy))
+    err_colmap = max_fn(abs_fn(cx - exp_cx), abs_fn(cy - exp_cy))
+
+    use_colmap = (err_colmap <= float(tol_px)) & (err_colmap + 1e-6 < err_open)
+    out[..., 0, 2] = where_fn(use_colmap, out[..., 0, 2] - 0.5, out[..., 0, 2])
+    out[..., 1, 2] = where_fn(use_colmap, out[..., 1, 2] - 0.5, out[..., 1, 2])
+
+    err_centered = max_fn(abs_fn(out[..., 0, 2] - exp_ox), abs_fn(out[..., 1, 2] - exp_oy))
+    snap = err_centered <= float(snap_tol_px)
+    out[..., 0, 2] = where_fn(snap, out[..., 0, 2] * 0 + exp_ox, out[..., 0, 2])
+    out[..., 1, 2] = where_fn(snap, out[..., 1, 2] * 0 + exp_oy, out[..., 1, 2])
+    return out
+
+
+def assert_centered_principal_point(K, height, width, convention="opencv", tol_px=1e-3, name="camera_intrinsics"):
+    exp_cx, exp_cy = centered_principal_point(height, width, convention=convention)
+    if isinstance(K, np.ndarray):
+        arr = np.asarray(K, dtype=np.float64)
+        if arr.shape[-2:] != (3, 3):
+            raise ValueError(f"{name} must end with (3,3), got {arr.shape}")
+        cx = arr[..., 0, 2]
+        cy = arr[..., 1, 2]
+        err = np.maximum(np.abs(cx - exp_cx), np.abs(cy - exp_cy))
+        max_err = float(np.max(err)) if err.size else 0.0
+        if max_err > float(tol_px):
+            bad_idx = tuple(int(i) for i in np.argwhere(err > float(tol_px))[0]) if err.ndim > 0 else ()
+            raise AssertionError(
+                f"{name} principal point mismatch at index {bad_idx}: "
+                f"max_err={max_err:.6f}px expected centered ({exp_cx:.6f},{exp_cy:.6f})"
+            )
+        return
+
+    arr = torch.as_tensor(K, dtype=torch.float32)
+    if arr.shape[-2:] != (3, 3):
+        raise ValueError(f"{name} must end with (3,3), got {tuple(arr.shape)}")
+    cx = arr[..., 0, 2]
+    cy = arr[..., 1, 2]
+    err = torch.maximum(torch.abs(cx - exp_cx), torch.abs(cy - exp_cy))
+    max_err = float(err.max().item()) if err.numel() else 0.0
+    if max_err > float(tol_px):
+        bad_idx = tuple(int(i) for i in torch.nonzero(err > float(tol_px), as_tuple=False)[0].tolist()) if err.ndim > 0 else ()
+        raise AssertionError(
+            f"{name} principal point mismatch at index {bad_idx}: "
+            f"max_err={max_err:.6f}px expected centered ({exp_cx:.6f},{exp_cy:.6f})"
+        )
+
 
 def homo(x):
     ones = torch.ones_like(x[...,-1:])
     homo_x = torch.cat([x,ones],axis=-1)
     return homo_x
+
 
 def project_point_map_to_depth_map_torch(point_map, extrinsics_cam, intrinsics_cam):
     if point_map.ndim == 3:
@@ -282,6 +361,3 @@ def compute_infrustum(extrinsics, intrinsics, points=None, depths=None, downsamp
 
 
     
-
-
-

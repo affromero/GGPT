@@ -132,8 +132,13 @@ def main(cfg):
             ff_outputs = ff_model(batch_ffres['images'], preprocessed=True, gt_dict=batch_ffres)
         #Print("FeedForward inference done.")
 
-        cam_metrics = eval_cameras(gt_extrinsics=batch_ffres['extrinsics'], pred_extrinsics=ff_outputs['extrinsics'], 
-                                  gt_intrinsics=batch_ffres['intrinsics'], pred_intrinsics=ff_outputs['intrinsics'])
+        cam_metrics = eval_cameras(
+            gt_extrinsics=batch_ffres['extrinsics'],
+            pred_extrinsics=ff_outputs['extrinsics'],
+            gt_intrinsics=batch_ffres['intrinsics'],
+            pred_intrinsics=ff_outputs['intrinsics'],
+            image_hw=batch_ffres['images'].shape[1:3],
+        )
         eval_logger.write(cam_metrics, prefix=cfg.feedforward_config.model, dataset_key=batch_ffres['dataset_name'], seq_key=batch_ffres['seq_name'])         
 
 
@@ -163,8 +168,13 @@ def main(cfg):
             if 'match_metrics' in sfm_outputs:
                 eval_logger.write(sfm_outputs['match_metrics'], prefix='sfm', dataset_key=batch_ffres['dataset_name'], seq_key=batch_ffres['seq_name'])
             if sfm_outputs['camera_success']:
-                cam_metrics = eval_cameras(gt_extrinsics=batch_ffres['extrinsics'], pred_extrinsics=sfm_outputs['extrinsics'], 
-                                        gt_intrinsics=batch_ffres['intrinsics'], pred_intrinsics=sfm_outputs['intrinsics'])
+                cam_metrics = eval_cameras(
+                    gt_extrinsics=batch_ffres['extrinsics'],
+                    pred_extrinsics=sfm_outputs['extrinsics'],
+                    gt_intrinsics=batch_ffres['intrinsics'],
+                    pred_intrinsics=sfm_outputs['intrinsics'],
+                    image_hw=batch_ffres['images'].shape[1:3],
+                )
                 eval_logger.write(cam_metrics, prefix='sfm', dataset_key=batch_ffres['dataset_name'], seq_key=batch_ffres['seq_name'])
                 if 'extr_rotcov' in sfm_outputs:
                     eval_logger.write({

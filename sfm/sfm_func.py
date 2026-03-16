@@ -1,16 +1,34 @@
-import torch 
 import os
+
 import numpy as np
-import PIL
-import hydra
+import torch
 # import pycolmap
 
-from matching import  match_images
+from matching import match_images
 from utils.basic import Print
 from utils.to_pycolmap import batch_torch_matrix_to_pycolmap
 from utils.geometry import compute_epipolar_errors, homo
 from tqdm import tqdm
-def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
+
+
+def _visible_mean(values, mask):
+    mask_f = mask.float()
+    denom = mask_f.sum(0).clamp_min(1.0)
+    return (values.float() * mask_f).sum(0) / denom
+
+
+def _inv1p_score(values):
+    return 1.0 / (1.0 + torch.clamp(values.float(), min=0.0))
+
+
+def run_sfm(
+        images,
+        ff_outputs,
+        match_models,
+        cfg,
+        gt=None,
+        output_dir=None,
+):
     import pycolmap
     images_ff = ff_outputs['images_ff']  # B,H,W,3
     N = images_ff.shape[0]
@@ -40,10 +58,13 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
         lr_h=ff_h, lr_w=ff_w,
         hr_to_lr=mres_to_fres
     )
+    pred_scores = match_results['pred_scores']
+    pred_cycle_error = match_results['pred_cycle_error']
+    pred_scores_flat = pred_scores.reshape(N, -1)
+    pred_cycle_error_flat = pred_cycle_error.reshape(N, -1)
 
-
-    M_ba = (match_results['pred_scores']>cfg.ba_config.score_thresh) & (match_results['pred_cycle_error']<cfg.ba_config.cycle_err_thresh)
-    M_dlt = (match_results['pred_scores']>cfg.dlt_config.score_thresh) & (match_results['pred_cycle_error']<cfg.dlt_config.cycle_err_thresh)
+    M_ba = (pred_scores > cfg.ba_config.score_thresh) & (pred_cycle_error < cfg.ba_config.cycle_err_thresh)
+    M_dlt = (pred_scores > cfg.dlt_config.score_thresh) & (pred_cycle_error < cfg.dlt_config.cycle_err_thresh)
 
     """
     2. Sparse ba (TODO: support known camera poses)
@@ -69,6 +90,8 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     Print(f"The number of tracks covering each view: {[nn.item() for nn in tracknum_perview]}")
     tracks_ba = match_results['pred_matches_lr'].view(N,-1,2)[:,selected]  #N, Ntracks_ba, 2
     tracks_mask_ba = M_ba[:,selected]  #Ntgt, Ntracks_ba
+    tracks_score_ba = pred_scores_flat[:,selected]
+    tracks_cycle_ba = pred_cycle_error_flat[:,selected]
     if tracks_mask_ba.shape[1] == 0:
         raise AssertionError(
             "No BA tracks selected after score/cycle filtering; "
@@ -80,8 +103,7 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     pts3d_ba = ff_outputs['points'].reshape(-1,3)[selected]  #Ntracks_ba, 3 (Takes the ff's prediction at query positions as initialization)
 
     if cfg.match_config.save_vis:
-        from matching.vis_match import vis_matches, vis_matches_in_pairs
-        from utils.tracks import extract_tracks_from_points
+        from matching.vis_match import vis_matches
         vis_matches(images=images_ff.permute(0,3,1,2),  #N,3,H,W 
             matches=tracks_ba,
             visibility=tracks_mask_ba, # visualize the matches with queries from image i
@@ -100,7 +122,6 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
         camera_type = cfg.ba_config.camera_type,
         shared_camera = cfg.ba_config.shared_camera,
     )
-    xyz_before_ba = torch.from_numpy(np.stack([reconstruction.points3D[i].xyz for i in sorted(reconstruction.points3D.keys())])).to(device).float()
     refine_focal = not calibrated and cfg.ba_config.get('refine_focal_length', True)
     # refine_pp = not calibrated
     if cfg.ba_config.loss_function_type == 'cauchy':
@@ -110,55 +131,102 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     ba_options = pycolmap.BundleAdjustmentOptions(
         loss_function_type=loss_function_type, loss_function_scale=cfg.ba_config.loss_function_scale,
         refine_focal_length=refine_focal)
+    ba_options.solver_options.minimizer_progress_to_stdout = bool(int(os.environ.get("GGPT_BA_PROGRESS", "0")))
     ba_config = pycolmap.BundleAdjustmentConfig()
     for img_id in reconstruction.images.keys():
         ba_config.add_image(img_id)
     bundle_adjuster = pycolmap.create_default_bundle_adjuster(ba_options, ba_config, reconstruction)
     bundle_adjuster.solve()
-
-    sfm_points_world = []
-    sfm_points_score = []
-    for pid in sorted(reconstruction.points3D.keys()):
-        p3d = reconstruction.points3D[pid]
-        xyz = np.asarray(p3d.xyz, dtype=np.float32)
-        if np.isfinite(xyz).all() is False:
-            continue
-        sfm_points_world.append(xyz)
-        err = float(getattr(p3d, "error", np.nan))
-        if np.isfinite(err) and err > 1e-9:
-            sfm_points_score.append(float(1.0 / err))
-        else:
-            sfm_points_score.append(0.0)
-    if len(sfm_points_world) > 0:
-        output_dict["sfm_points_world"] = torch.from_numpy(np.asarray(sfm_points_world, dtype=np.float32)).to(device)
-        output_dict["sfm_points_score"] = torch.from_numpy(np.asarray(sfm_points_score, dtype=np.float32)).to(device)
-    else:
-        output_dict["sfm_points_world"] = torch.zeros((0, 3), dtype=torch.float32, device=device)
-        output_dict["sfm_points_score"] = torch.zeros((0,), dtype=torch.float32, device=device)
-
+    reconstruction.update_point_3d_errors()
 
     output_dict['intrinsics'] = torch.zeros_like(ff_outputs['intrinsics'])
     output_dict['extrinsics'] = torch.zeros_like(ff_outputs['extrinsics'])
+    exp_cx_colmap = ff_w / 2.0
+    exp_cy_colmap = ff_h / 2.0
+    colmap_pp_tol = 1e-3
     for i in range(1,N+1): # Image ids in pycolmap start from 1
-        cam_params = reconstruction.cameras[reconstruction.images[i].camera_id].params
-        if len(cam_params) == 3:
+        camera = reconstruction.cameras[reconstruction.images[i].camera_id]
+        cam_params = camera.params
+        if camera.model == pycolmap.CameraModelId.SIMPLE_PINHOLE:
             fx = float(cam_params[0])
             fy = fx
-        elif len(cam_params) >= 4:
+            cx_colmap = float(cam_params[1])
+            cy_colmap = float(cam_params[2])
+        elif camera.model == pycolmap.CameraModelId.PINHOLE:
             fx = float(cam_params[0])
             fy = float(cam_params[1])
+            cx_colmap = float(cam_params[2])
+            cy_colmap = float(cam_params[3])
         else:
-            raise AssertionError(f"Unsupported camera params length: {len(cam_params)}")
+            raise AssertionError(f"Unsupported GGPT BA camera model: {camera.model}, params={cam_params}")
+        if abs(cx_colmap - exp_cx_colmap) > colmap_pp_tol or abs(cy_colmap - exp_cy_colmap) > colmap_pp_tol:
+            raise AssertionError(
+                "GGPT BA returned a non-centered principal point, but this export path assumes fixed centered PP. "
+                f"camera_params={cam_params}, expected_colmap_pp=({exp_cx_colmap:.6f},{exp_cy_colmap:.6f}), "
+                f"got=({cx_colmap:.6f},{cy_colmap:.6f})"
+            )
         output_dict['intrinsics'][i-1, 0, 0] = fx
         output_dict['intrinsics'][i-1, 1, 1] = fy
-        output_dict['intrinsics'][i-1, 0, 2] = ff_w/2-0.5
-        output_dict['intrinsics'][i-1, 1, 2] = ff_h/2-0.5 #Center principal point!
+        output_dict['intrinsics'][i-1, 0, 2] = cx_colmap - 0.5
+        output_dict['intrinsics'][i-1, 1, 2] = cy_colmap - 0.5
         output_dict['intrinsics'][i-1, 2, 2] = 1.0
         rigid3d = reconstruction.images[i].cam_from_world.matrix() # (3,4)
         output_dict['extrinsics'][i-1,:3,:] = torch.from_numpy(rigid3d).to(device).float()
         if output_dict['extrinsics'].shape[1] == 4:
             output_dict['extrinsics'][i-1,3,3] = 1.0
     output_dict['camera_success'] = True
+
+    sfm_points_world = []
+    sparse_score_variants = {"match_score_mean": [], "cycle_inv1p": [], "reproj_inv1p": []}
+    sparse_intr = output_dict['intrinsics'][:, :3, :3].to(device).float()
+    sparse_extr = output_dict['extrinsics'][:, :3, :4].to(device).float()
+    tracks_ba_obs = tracks_ba.to(device).float() + 0.5
+    match_score_mean_ba = _visible_mean(tracks_score_ba, tracks_mask_ba)
+    cycle_score_ba = _inv1p_score(_visible_mean(tracks_cycle_ba, tracks_mask_ba))
+    for pid in sorted(reconstruction.points3D.keys()):
+        track_idx = int(pid) - 1
+        if track_idx < 0 or track_idx >= tracks_ba.shape[1]:
+            raise AssertionError(
+                f"Unexpected BA point3D id={pid} for {tracks_ba.shape[1]} selected tracks."
+            )
+        p3d = reconstruction.points3D[pid]
+        xyz = np.asarray(p3d.xyz, dtype=np.float32)
+        if np.isfinite(xyz).all() is False:
+            continue
+        xyz_t = torch.from_numpy(xyz).to(device=device, dtype=torch.float32)
+        xyz_h = torch.cat([xyz_t, xyz_t.new_tensor([1.0])], dim=0)
+        pts_cam = torch.einsum('nij,j->ni', sparse_extr, xyz_h)
+        uv_h = torch.einsum('nij,nj->ni', sparse_intr, pts_cam)
+        uv = uv_h[:, :2] / uv_h[:, 2:3].clamp_min(1e-8)
+        reproj_valid = tracks_mask_ba[:, track_idx] & torch.isfinite(uv).all(dim=1) & (pts_cam[:, 2] > 1e-8)
+        if bool(reproj_valid.any()):
+            reproj_err = torch.norm(uv[reproj_valid] - tracks_ba_obs[reproj_valid, track_idx], dim=-1).mean()
+            reproj_inv1p = float(_inv1p_score(reproj_err))
+        else:
+            reproj_inv1p = 0.0
+        match_score_mean = float(match_score_mean_ba[track_idx])
+        cycle_inv1p = float(cycle_score_ba[track_idx])
+        sfm_points_world.append(xyz)
+        sparse_score_variants["match_score_mean"].append(match_score_mean)
+        sparse_score_variants["cycle_inv1p"].append(cycle_inv1p)
+        sparse_score_variants["reproj_inv1p"].append(reproj_inv1p)
+    if len(sfm_points_world) > 0:
+        output_dict["sfm_points_world"] = torch.from_numpy(np.asarray(sfm_points_world, dtype=np.float32)).to(device)
+        output_dict["sfm_points_score"] = torch.from_numpy(
+            np.asarray(sparse_score_variants["reproj_inv1p"], dtype=np.float32)
+        ).to(device)
+        output_dict["sfm_points_score_variants"] = {
+            key: torch.from_numpy(np.asarray(values, dtype=np.float32)).to(device)
+            for key, values in sparse_score_variants.items()
+        }
+    else:
+        output_dict["sfm_points_world"] = torch.zeros((0, 3), dtype=torch.float32, device=device)
+        output_dict["sfm_points_score"] = torch.zeros((0,), dtype=torch.float32, device=device)
+        output_dict["sfm_points_score_variants"] = {
+            "match_score_mean": torch.zeros((0,), dtype=torch.float32, device=device),
+            "cycle_inv1p": torch.zeros((0,), dtype=torch.float32, device=device),
+            "reproj_inv1p": torch.zeros((0,), dtype=torch.float32, device=device),
+        }
 
 
     """
@@ -189,16 +257,25 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     print("Epipolar error discard ratio: ", 1-(M_dlt.sum(axis=0)>=2).sum().item()/dlt_num)
     tracks_dlt = match_results['pred_matches_lr'].view(N,-1,2)[:,remaining_tracks].to(device)  #Nview, Ntracks_dlt, 2
     tracks_mask_dlt = M_dlt[:,remaining_tracks]  #Nview, Ntracks_dlt
+    tracks_score_dlt = pred_scores_flat[:,remaining_tracks].to(device)
+    tracks_cycle_dlt = pred_cycle_error_flat[:,remaining_tracks].to(device)
 
     weights = tracks_mask_dlt.float()
     max_pts_num = cfg.dlt_config.get('batch_size', 500000)
     num_chunk = (tracks_dlt.shape[1]+max_pts_num-1)//max_pts_num
     xyz_in_img, count_in_img = torch.zeros(N*ff_h*ff_w, 3).to(device), torch.zeros(N*ff_h*ff_w).to(device) # Our target
+    dlt_score_sum = {
+        "match_score_mean": torch.zeros(N*ff_h*ff_w, dtype=torch.float32, device=device),
+        "cycle_inv1p": torch.zeros(N*ff_h*ff_w, dtype=torch.float32, device=device),
+        "reproj_inv1p": torch.zeros(N*ff_h*ff_w, dtype=torch.float32, device=device),
+    }
     for chunk_id in tqdm(range(num_chunk), desc='DLT triangulation'):
         start_idx = chunk_id*max_pts_num
         end_idx = min((chunk_id+1)*max_pts_num, tracks_dlt.shape[1])
         tracks_dlt_chunk = tracks_dlt[:,start_idx:end_idx]  #(Nview, Ntracks_chunk, 2)
         tracks_mask_dlt_chunk = tracks_mask_dlt[:,start_idx:end_idx]  #(Nview, Ntracks_chunk)
+        tracks_score_dlt_chunk = tracks_score_dlt[:,start_idx:end_idx]
+        tracks_cycle_dlt_chunk = tracks_cycle_dlt[:,start_idx:end_idx]
         
         Ai_chunk = tracks_dlt_chunk[...,None] * P[:,None,2:3,:] - P[:,None,:2,:] #(Nview,Ntracks,2,4)
         weights_chunk = weights[:,start_idx:end_idx] #(Nview, Ntracks_chunk)
@@ -214,6 +291,8 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
         xyz = xyz[filter1]
         tracks_dlt_chunk = tracks_dlt_chunk[:,filter1]
         tracks_mask_dlt_chunk = tracks_mask_dlt_chunk[:,filter1]
+        tracks_score_dlt_chunk = tracks_score_dlt_chunk[:,filter1]
+        tracks_cycle_dlt_chunk = tracks_cycle_dlt_chunk[:,filter1]
 
         # Filter points based on reprojection error
         xy_reproj_chunk = torch.einsum('nij,mj->nmi', P, homo(xyz))
@@ -224,6 +303,9 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
         xyz = xyz[filter_reproj]
         tracks_dlt_chunk = tracks_dlt_chunk[:,filter_reproj]
         tracks_mask_dlt_chunk = tracks_mask_dlt_chunk[:,filter_reproj]
+        tracks_score_dlt_chunk = tracks_score_dlt_chunk[:,filter_reproj]
+        tracks_cycle_dlt_chunk = tracks_cycle_dlt_chunk[:,filter_reproj]
+        reproj_error_mean_chunk = reproj_error_mean_chunk[filter_reproj]
         if filter_reproj.sum()==0:
             continue
         # Filter points based on triangulation angles
@@ -249,13 +331,43 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
         xyz = xyz[filter_angle]
         tracks_dlt_chunk = tracks_dlt_chunk[:,filter_angle]
         tracks_mask_dlt_chunk = tracks_mask_dlt_chunk[:,filter_angle]
+        tracks_score_dlt_chunk = tracks_score_dlt_chunk[:,filter_angle]
+        tracks_cycle_dlt_chunk = tracks_cycle_dlt_chunk[:,filter_angle]
+        reproj_error_mean_chunk = reproj_error_mean_chunk[filter_angle]
+        max_angle_degs = max_angle_degs[filter_angle]
+
+        match_score_mean_chunk = _visible_mean(tracks_score_dlt_chunk, tracks_mask_dlt_chunk)
+        cycle_score_chunk = _inv1p_score(_visible_mean(tracks_cycle_dlt_chunk, tracks_mask_dlt_chunk))
+        reproj_inv1p_chunk = _inv1p_score(reproj_error_mean_chunk)
 
         xyz_for_img_chunk = xyz.unsqueeze(0).tile(N,1,1)[tracks_mask_dlt_chunk] #(N,Npts_chunk,3) -> (Nobs_chunk, 3)
         view_index_chunk = torch.arange(N).to(device).unsqueeze(1).tile(1,xyz.shape[0])[tracks_mask_dlt_chunk]  #(N,Npts) -> (Nobs_chunk,)
-        index2d_in_img_chunk = tracks_dlt_chunk[tracks_mask_dlt_chunk].round().long() # (Nobs_chunk,2-xy)
-        index1d_in_scene_chunk = view_index_chunk*ff_w*ff_h + index2d_in_img_chunk[:,1].clamp(0,ff_h-1)*ff_w + index2d_in_img_chunk[:,0].clamp(0,ff_w-1)  #(Nobs_chunk,)
+        index2d_obs_chunk = tracks_dlt_chunk[tracks_mask_dlt_chunk]
+        index2d_in_img_chunk = index2d_obs_chunk.round().long()
+        valid_obs = torch.isfinite(index2d_obs_chunk).all(dim=1)
+        valid_obs = valid_obs & (index2d_in_img_chunk[:, 0] >= 0) & (index2d_in_img_chunk[:, 0] < ff_w)
+        valid_obs = valid_obs & (index2d_in_img_chunk[:, 1] >= 0) & (index2d_in_img_chunk[:, 1] < ff_h)
+        if valid_obs.sum() == 0:
+            continue
+        xyz_for_img_chunk = xyz_for_img_chunk[valid_obs]
+        view_index_chunk = view_index_chunk[valid_obs]
+        index2d_in_img_chunk = index2d_in_img_chunk[valid_obs]
+        index1d_in_scene_chunk = view_index_chunk*ff_w*ff_h + index2d_in_img_chunk[:,1]*ff_w + index2d_in_img_chunk[:,0]  #(Nobs_chunk,)
         xyz_in_img.scatter_reduce_(dim=0, index=index1d_in_scene_chunk.unsqueeze(1).expand(-1,3), src=xyz_for_img_chunk, reduce='sum', include_self=True)
         count_in_img.scatter_reduce_(dim=0, index=index1d_in_scene_chunk, src=torch.ones_like(index1d_in_scene_chunk).float(), reduce='sum', include_self=True)
+        track_scores_for_obs = {
+            "match_score_mean": match_score_mean_chunk.unsqueeze(0).expand(N, -1)[tracks_mask_dlt_chunk][valid_obs],
+            "cycle_inv1p": cycle_score_chunk.unsqueeze(0).expand(N, -1)[tracks_mask_dlt_chunk][valid_obs],
+            "reproj_inv1p": reproj_inv1p_chunk.unsqueeze(0).expand(N, -1)[tracks_mask_dlt_chunk][valid_obs],
+        }
+        for key, obs_score in track_scores_for_obs.items():
+            dlt_score_sum[key].scatter_reduce_(
+                dim=0,
+                index=index1d_in_scene_chunk,
+                src=obs_score.float(),
+                reduce='sum',
+                include_self=True,
+            )
     
     xyz_in_img = xyz_in_img / count_in_img.clamp(min=1)[:,None]
     dlt_xyz, count_in_img = xyz_in_img.view(N,ff_h,ff_w,3), count_in_img.view(N,ff_h,ff_w)
@@ -268,6 +380,11 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
 
     output_dict['points'] = dlt_xyz
     output_dict['point_masks'] = dlt_mask
+    output_dict['point_scores'] = (dlt_score_sum["reproj_inv1p"] / count_in_img.view(-1).clamp(min=1.0)).view(N,ff_h,ff_w)
+    output_dict['point_score_variants'] = {
+        key: (value / count_in_img.view(-1).clamp(min=1.0)).view(N,ff_h,ff_w)
+        for key, value in dlt_score_sum.items()
+    }
     output_dict['points_success'] = True
 
     return output_dict

@@ -1,6 +1,10 @@
-
 import torch
-from utils.geometry import unproject_depth_map_to_point_map_torch, closed_form_inverse_se3
+from utils.geometry import (
+    assert_centered_principal_point,
+    closed_form_inverse_se3,
+    normalize_centered_intrinsics_to_opencv,
+    unproject_depth_map_to_point_map_torch,
+)
 from PIL import Image
 import numpy as np
 import sys 
@@ -28,6 +32,21 @@ def preprocess(images, output_width=518):
     output_height = round(output_width*original_height/original_width/14)*14
     images_ff = _resize_images_lanczos(images, output_height, output_width)
     return images_ff
+
+
+def _normalize_intrinsics_hw(intrinsics, height, width):
+    return normalize_centered_intrinsics_to_opencv(intrinsics, height, width)
+
+
+def _assert_intrinsics_hw(intrinsics, height, width, *, name):
+    assert_centered_principal_point(
+        intrinsics,
+        int(height),
+        int(width),
+        tol_px=1e-3,
+        name=name,
+    )
+    return intrinsics
 
 
 class FeedForward_Model(torch.nn.Module):
@@ -75,26 +94,41 @@ class FeedForward_Model(torch.nn.Module):
         output_width = 504 if self.configs.model == 'dav3' else 518
         images_ff = preprocess(images, output_width).to(device) if not preprocessed else images
         output_dict['images_ff'] = images_ff
+        gt_intrinsics = None
+        if gt_dict is not None and gt_dict.get('intrinsics', None) is not None:
+            gt_intrinsics = gt_dict['intrinsics'].clone()
+            _assert_intrinsics_hw(
+                gt_intrinsics,
+                images_ff.shape[1],
+                images_ff.shape[2],
+                name="FeedForward_Model gt_intrinsics",
+            )
         if 'vggt' in self.configs.model:
             dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
             with torch.autocast(device_type='cuda', dtype=dtype):
                 raw_outputs = self.model(images_ff.permute(0,3,1,2))  #(N,3,H,W)
             from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-            output_dict['extrinsics'], output_dict['intrinsics'] = pose_encoding_to_extri_intri(raw_outputs['pose_enc'], images_ff.shape[1:3])
-            output_dict['extrinsics'], output_dict['intrinsics'] = output_dict['extrinsics'][0], output_dict['intrinsics'][0] #squeeze the batch=1 dimension
+            output_dict['extrinsics'], intrinsics_native = pose_encoding_to_extri_intri(raw_outputs['pose_enc'], images_ff.shape[1:3])
+            output_dict['extrinsics'], intrinsics_native = output_dict['extrinsics'][0], intrinsics_native[0] #squeeze the batch=1 dimension
+            output_dict['intrinsics'] = _normalize_intrinsics_hw(
+                intrinsics_native,
+                images_ff.shape[1],
+                images_ff.shape[2],
+            )
             if 'depth' in self.configs.model:
                 B,N,H,W,D = raw_outputs['depth'].shape
+                # Keep VGGT's native pixel convention when turning depth into 3D.
                 output_dict['points'] = unproject_depth_map_to_point_map_torch(
                         depth_map=raw_outputs['depth'].view(B*N,H,W),
                         extrinsics_cam=output_dict['extrinsics'].view(B*N,3,4),
-                        intrinsics_cam=output_dict['intrinsics'].view(B*N,3,3)).view(B,N,H,W,3)[0]
+                        intrinsics_cam=intrinsics_native.view(B*N,3,3)).view(B,N,H,W,3)[0]
                 output_dict['points_conf'] = raw_outputs['depth_conf'][0] #squeeze the batch=1 dimension
             else:
                 output_dict['points'] = raw_outputs['world_points'][0]  #(N,H,W,3)
                 output_dict['points_conf'] = raw_outputs['world_points_conf'][0]  #(N,H,W)
         elif self.configs.model == 'dav3':
             if self.configs.dav3.get('input_pose', False):
-                input_intrinsics = gt_dict['intrinsics'].clone()
+                input_intrinsics = gt_intrinsics.clone()
                 input_intrinsics[...,1,2] = input_intrinsics[...,1,2] + 0.5
                 input_intrinsics[...,0,2] = input_intrinsics[...,0,2] + 0.5
                 input_extrinsics = torch.eye(4,device=device)[None,:,:].repeat(images_ff.shape[0],1,1).to(device)
@@ -123,7 +157,7 @@ class FeedForward_Model(torch.nn.Module):
             dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
             if self.configs.model == 'pi3x':
                 if self.configs.pi3x.get('input_intrinsics', False):
-                    input_intrinsics = gt_dict['intrinsics'].clone()
+                    input_intrinsics = gt_intrinsics.clone()
                     input_intrinsics[...,1,2] = input_intrinsics[...,1,2] + 0.5
                     input_intrinsics[...,0,2] = input_intrinsics[...,0,2] + 0.5 #Not sure here. But I guess it follows colmap-convention?
                     input_intrinsics = input_intrinsics.unsqueeze(0)
@@ -211,5 +245,11 @@ class FeedForward_Model(torch.nn.Module):
             output_dict = {k:torch.stack(v, axis=1).squeeze(0) for k,v in output_dict.items()}
         else:
             raise NotImplementedError(f"Model {self.configs.model} not implemented in FeedForward_Model.")
-        
+
+        if 'intrinsics' in output_dict:
+            output_dict['intrinsics'] = _normalize_intrinsics_hw(
+                output_dict['intrinsics'],
+                images_ff.shape[1],
+                images_ff.shape[2],
+            )
         return output_dict
