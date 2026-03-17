@@ -1,6 +1,7 @@
 # GGPT: Geometry-grounded Point Transformer
 
 [![CVPR 2026](https://img.shields.io/badge/CVPR-2026-blue.svg)](#)
+[![Arxiv](https://img.shields.io/badge/arXiv-Paper-b31b1b)](https://arxiv.org/abs/2603.11174)
 [![Project Page](https://img.shields.io/badge/Project-Page-blue)](https://chenyutongthu.github.io/research/ggpt)
 [![Hugging Face Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models-orange)](https://huggingface.co/YutongGoose/GGPT)
 [![Hugging Face Datasets](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Datasets-green)](https://huggingface.co/datasets/YutongGoose/GGPT_eval)
