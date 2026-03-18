@@ -1,0 +1,37 @@
+[project]
+name = "ggpt"
+version = "0.1.0"
+description = "Geometry-grounded Point Transformer (CVPR 2026)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Pillow",
+    "huggingface_hub",
+    "einops",
+    "safetensors",
+    "opencv-python",
+    "pycolmap>=3.12.0",
+    "lightglue @ git+https://github.com/cvg/LightGlue.git",
+    "romav2",
+    "pointcept",
+    "hydra-core",
+    "h5py",
+    "pyyaml",
+    "scipy",
+    "plyfile",
+    "addict",
+    "timm",
+    "matplotlib",
+    "gin-config",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ggpt*", "sfm*", "feedforward*", "matching*", "utils*"]
+
+[tool.uv.sources]
+romav2 = {path = "RoMaV2", editable = true}
+pointcept = {path = "Pointcept", editable = true}
