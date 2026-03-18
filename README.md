@@ -80,7 +80,8 @@ dlt_config:
 
 ### 🎬 Large number of input views
 
-When working with a large number of input views (e.g., > 50), use the following configuration to prevent out-of-memory (OOM) errors. Additionally, for denser view sets, we recommend applying stricter filtering thresholds during the SfM process.
+When working with a large number of input views (e.g., > 50), use the following configuration to prevent out-of-memory (OOM) errors. Additionally, for denser view sets, we recommend applying stricter filtering thresholds during the SfM process. 
+
 ```
 python run_demo.py \
     common_config.reduce_memory=True match_config.models=romav2-fast \
@@ -88,6 +89,8 @@ python run_demo.py \
     dlt_config.cycle_err_thresh=1 dlt_config.max_reproj_error=1 dlt_config.min_tri_angle=7 \
     hydra.run.dir=outputs/demo/ image_dir=/path
 ```
+
+Note on Scalability: The current pipeline performs exhaustive matching, which leads to longer runtimes for large-scale or dense view reconstructions. For better efficiency in these scenarios, we recommend integrating sparse graph building.
 
 ---
 
