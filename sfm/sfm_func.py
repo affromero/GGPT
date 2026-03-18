@@ -108,7 +108,11 @@ def run_sfm(images, ff_outputs, match_models, cfg, gt=None, output_dir=None):
     output_dict['intrinsics'] = torch.zeros_like(ff_outputs['intrinsics'])
     output_dict['extrinsics'] = torch.zeros_like(ff_outputs['extrinsics'])
     for i in range(1,N+1): # Image ids in pycolmap start from 1
-        fx, fy, cx, cy = reconstruction.cameras[reconstruction.images[i].camera_id].params[:4]
+        if cfg.ba_config.camera_type == "PINHOLE":
+            fx, fy, cx, cy = reconstruction.cameras[reconstruction.images[i].camera_id].params[:4]
+        else:
+            focal, cx, cy = reconstruction.cameras[reconstruction.images[i].camera_id].params[:3]
+            fx = fy = focal
         output_dict['intrinsics'][i-1, 0, 0] = fx
         output_dict['intrinsics'][i-1, 1, 1] = fy
         output_dict['intrinsics'][i-1, 0, 2] = ff_w/2-0.5
